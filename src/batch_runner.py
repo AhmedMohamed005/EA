@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
+import sys
 from .hybrid import HybridOptimizer, set_global_seed
 
 def run_batch_experiments(num_seeds=30, generations=20, pop_size=20, output_dir="results"):
@@ -83,5 +84,73 @@ def run_batch_experiments(num_seeds=30, generations=20, pop_size=20, output_dir=
     df_results.to_csv(csv_path, index=False)
     print(f"\nStats exported to {csv_path}")
 
+
+def run_aco_vs_greedy_batch(
+    num_seeds=30,
+    generations=20,
+    pop_size=20,
+    output_dir="results",
+    selection_method="tournament",
+    mutation_method="swap",
+):
+    """
+    Comparative analysis: same GA outer loop, inner routing = ACO (ants + pheromone)
+    vs deterministic nearest-neighbour tours. Same seeds, generations, operators, and
+    fitness shell (picking time, congestion, penalties) for a fair rubric-facing comparison.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    seeds = list(range(1, num_seeds + 1))
+    methods = [
+        ("aco", "GA_plus_ACO"),
+        ("greedy_nn", "GA_plus_GreedyNN"),
+    ]
+    rows = []
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dataset_path = os.path.join(base_dir, "dataset", "synthetic_warehouse_orders.csv")
+
+    print("\n======== ACO vs Greedy-NN (same GA, different routing evaluator) ========\n")
+
+    for mode, label in methods:
+        print(f"--- Method: {label} (routing_mode={mode}) ---")
+        for seed in seeds:
+            print(f"  [{label}] seed {seed}/{num_seeds}...", end=" ", flush=True)
+            set_global_seed(seed)
+            optimizer = HybridOptimizer(dataset_path=dataset_path)
+            optimizer.ga.population_size = pop_size
+            optimizer.routing_mode = mode
+
+            population = optimizer.ga.initialize_population()
+            best_overall = float("inf")
+            for g in range(generations):
+                new_pop, fitnesses = optimizer.run_generation(
+                    population,
+                    selection_method=selection_method,
+                    mutation_method=mutation_method,
+                )
+                population = new_pop
+                best_overall = min(best_overall, min(fitnesses))
+            print(f"Best: {best_overall:.2f}")
+            rows.append(
+                {
+                    "Method": label,
+                    "RoutingMode": mode,
+                    "Seed": seed,
+                    "BestFitness": best_overall,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    out_csv = os.path.join(output_dir, "aco_vs_greedy_nn.csv")
+    df.to_csv(out_csv, index=False)
+    print("\n--- Summary (best fitness per run) ---")
+    print(df.groupby("Method")["BestFitness"].agg(["mean", "std", "min", "max"]).to_string())
+    print(f"\nSaved {out_csv}")
+
+
 if __name__ == "__main__":
-    run_batch_experiments()
+    if len(sys.argv) > 1 and sys.argv[1].strip().lower() in ("compare", "aco_vs_greedy"):
+        run_aco_vs_greedy_batch()
+    else:
+        run_batch_experiments()

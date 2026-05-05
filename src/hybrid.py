@@ -42,6 +42,8 @@ class HybridOptimizer:
         self.safe_zone_rows = safe_zone_rows or [grid_size[0] - 1] # By default, back wall
         self.packing_zone_rows = [grid_size[0] - 2] # Explicit packing zone separate from hazardous
         self.penalty_weight = 1000.0  # Heavy penalty for constraint violations
+        # 'aco' = GA hybrid with ACO routing (default). 'greedy_nn' = same GA, deterministic nearest-neighbour tours (baseline for rubric: ACO vs other).
+        self.routing_mode = 'aco'
 
     def _parse_orders(self):
         """Iterates over the dataset and maps items to integer indices for GA."""
@@ -80,50 +82,92 @@ class HybridOptimizer:
                 
         return penalty
 
-    def evaluate_layout_fitness(self, layout, sample_size=10):
+    @staticmethod
+    def _manhattan(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _greedy_nn_route(self, sorted_locs, order):
         """
-        Fitness Function connecting GA and ACO.
-        1. Maps layout to 2D grid coordinates.
-        2. Applies Penalty Functions for constraints.
-        3. Uses ACO to calculate traveling distance and time for a batch of orders.
-        4. Calculates congestion penalties.
+        Deterministic nearest-neighbour pick tour: start at depot (0,0), repeatedly visit
+        closest unvisited pick, return to depot. Node ids: 0 = dock, k >= 1 is item (k-1)'s location.
+        """
+        depot = (0, 0)
+        coords = {0: depot}
+        for k in range(1, self.num_items + 1):
+            coords[k] = sorted_locs[k - 1]
+        required = [idx + 1 for idx in order]
+        current = 0
+        unvisited = set(required)
+        route = [0]
+        distance = 0.0
+        while unvisited:
+            nxt = min(unvisited, key=lambda v: self._manhattan(coords[current], coords[v]))
+            distance += self._manhattan(coords[current], coords[nxt])
+            current = nxt
+            unvisited.remove(nxt)
+            route.append(current)
+        distance += self._manhattan(coords[current], coords[0])
+        route.append(0)
+        return route, distance
+
+    def _evaluate_layout_routing_core(self, layout, sample_size, route_fn):
+        """
+        Shared fitness shell: same sampling, picking time, congestion and constraint penalties.
+        route_fn(sorted_locs, order) -> (route, distance).
         """
         item_locations = {}
         for slot_idx, item_idx in enumerate(layout):
             item_locations[item_idx] = self.ga.shelf_locations[slot_idx]
-            
-        aco = WarehouseACO(num_nodes=self.num_items + 1)
-        
         sorted_locs = [item_locations[i] for i in range(self.num_items)]
-        aco.initialize_graph(sorted_locs, start_point=(0, 0))
-        
+
         sample_orders = random.sample(self.all_orders, min(sample_size, len(self.all_orders)))
         total_time = 0.0
         edge_usage = {}
-        
+
         for order in sample_orders:
-            required_nodes = [idx + 1 for idx in order]
-            route, distance = aco.simulate_ant_routing(required_nodes)
-            
-            # Picking time: 2 seconds per item
+            route, distance = route_fn(sorted_locs, order)
             picking_time = len(order) * 2.0
-            
-            # Assume ant speed is 1 meter per second, so distance = time
             route_time = distance + picking_time
             total_time += route_time
-            
-            # Track congestion
             for i in range(len(route) - 1):
-                u, v = route[i], route[i+1]
+                u, v = route[i], route[i + 1]
                 edge = tuple(sorted((u, v)))
                 edge_usage[edge] = edge_usage.get(edge, 0) + 1
-                
-        # Congestion penalty: penalize edges used too frequently
+
         congestion_penalty = sum((count - 1) * 5.0 for count in edge_usage.values() if count > 1)
-        
         constraint_penalty = self.calculate_penalty(layout)
-        
         return total_time + congestion_penalty + constraint_penalty
+
+    def evaluate_layout_fitness(self, layout, sample_size=10):
+        """
+        Fitness with ACO routing (ants + pheromone).
+        """
+        item_locations = {}
+        for slot_idx, item_idx in enumerate(layout):
+            item_locations[item_idx] = self.ga.shelf_locations[slot_idx]
+
+        aco = WarehouseACO(num_nodes=self.num_items + 1)
+        sorted_locs = [item_locations[i] for i in range(self.num_items)]
+        aco.initialize_graph(sorted_locs, start_point=(0, 0))
+
+        def route_fn(slocs, order):
+            required_nodes = [idx + 1 for idx in order]
+            return aco.simulate_ant_routing(required_nodes)
+
+        return self._evaluate_layout_routing_core(layout, sample_size, route_fn)
+
+    def evaluate_layout_fitness_greedy_nn(self, layout, sample_size=10):
+        """
+        Same objective structure as ACO fitness, but routes each order with a fixed
+        nearest-neighbour heuristic (no colony). Used as GA-only routing baseline vs hybrid ACO.
+        """
+        return self._evaluate_layout_routing_core(layout, sample_size, self._greedy_nn_route)
+
+    def evaluate_fitness(self, layout, sample_size=10):
+        """Dispatch fitness by routing_mode for comparative experiments."""
+        if self.routing_mode == 'greedy_nn':
+            return self.evaluate_layout_fitness_greedy_nn(layout, sample_size)
+        return self.evaluate_layout_fitness(layout, sample_size)
 
     def _crowding_replacement(self, current_pop, current_fit, new_pop, new_fit):
         """Simple diversity preservation using distance checking."""
@@ -147,7 +191,7 @@ class HybridOptimizer:
         while len(next_gen) < self.ga.population_size:
             ind = self.ga.generate_individual()
             next_gen.append(ind)
-            next_fit.append(self.evaluate_layout_fitness(ind))
+            next_fit.append(self.evaluate_fitness(ind))
             
         return next_gen, next_fit
 
@@ -155,7 +199,7 @@ class HybridOptimizer:
         """Executes one generation map over the population."""
         # Always evaluate if coming from a fresh set (removes stale cache guard safely)
         if getattr(self, '_last_pop', None) != current_population:
-            self._current_fitnesses = [self.evaluate_layout_fitness(ind) for ind in current_population]
+            self._current_fitnesses = [self.evaluate_fitness(ind) for ind in current_population]
             self._last_pop = current_population
         fitnesses = self._current_fitnesses
         
@@ -182,7 +226,7 @@ class HybridOptimizer:
             
             new_population.extend([child1, child2])
             
-        new_fitnesses = [self.evaluate_layout_fitness(ind) for ind in new_population]
+        new_fitnesses = [self.evaluate_fitness(ind) for ind in new_population]
         
         # Apply crowd-based elitism for diversity and survivor selection
         next_population, next_fitnesses = self._crowding_replacement(

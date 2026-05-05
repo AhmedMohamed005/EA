@@ -22,7 +22,7 @@ To achieve the "Bonus" and build a robust solution, we are formulating this as a
 ## 2. Team Roles & Responsibilities (6 Members)
 *All members must contribute to the code and the report. This division ensures accountability.*
 
-1.  **Lead Architect / Integrator:** Manages the GitHub repository, ensures modular code, integrates GA with ACO, and handles the random seed management.
+1.  **Lead Architect / Integrator:** Manages the GitHub repository, integrates GA with ACO, and handles the random seed management.
 2.  **GA Developer:** Implements the layout representation, initialisation, crossover, mutation, and selection operators.
 3.  **ACO Developer:** Implements the grid graph, pheromone matrix, heuristic visibility, and evaporation logic.
 4.  **GUI & Simulation Engineer:** Builds the visual interface (e.g., using PyQt or Tkinter) to animate the warehouse layout and the ants moving through aisles.

@@ -147,6 +147,26 @@ def plot_operator_comparison():
     print("Saved results/operator_comparison.png")
     plt.close()
 
+
+def plot_aco_vs_greedy_comparison():
+    """Boxplot for GA+ACO vs GA+GreedyNN comparison (30 seeds each)"""
+    stats_path = "results/aco_vs_greedy_nn.csv"
+    if not os.path.exists(stats_path):
+        print(f"Warning: {stats_path} not found. Run: python -m src.batch_runner compare")
+        return
+    df = pd.read_csv(stats_path)
+    plt.figure(figsize=(8, 5))
+    df.boxplot(column="BestFitness", by="Method", grid=False)
+    plt.title("ACO vs greedy routing (same GA shell, 30 seeds)")
+    plt.suptitle("")
+    plt.ylabel("Best fitness (lower is better)")
+    plt.xlabel("Method")
+    plt.tight_layout()
+    plt.savefig("results/aco_vs_greedy_nn.png", dpi=300)
+    print("Saved results/aco_vs_greedy_nn.png")
+    plt.close()
+
+
 if __name__ == "__main__":
     print("Executing final reporting scripts...")
     set_global_seed(42)
@@ -161,3 +181,4 @@ if __name__ == "__main__":
     run_sensitivity_analysis()
     run_product_mix_comparison()
     plot_operator_comparison()
+    plot_aco_vs_greedy_comparison()
